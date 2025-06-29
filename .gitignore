@@ -1,0 +1,11 @@
+# Arquivo de autenticação do Baileys - Contém informações sensíveis!
+auth_info_baileys/
+
+# Dependências do Node.js - Pasta pode ser muito grande e é recriada com 'npm install'
+node_modules/
+
+# Arquivos de log que podem ser gerados
+*.log
+
+# Arquivos de ambiente - Podem conter chaves de API e outras informações secretas
+.env
