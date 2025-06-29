@@ -1,34 +1,58 @@
-// bot.js (versão com Menu Dinâmico e Inteligente)
+// bot.js (versão com fluxo inteligente para RioVagas)
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
 const { Boom } = require('@hapi/boom');
 const pino = require('pino');
 const axios = require('axios');
 const qrcode = require('qrcode-terminal');
 
-// --- CONFIGURAÇÃO CENTRAL ---
-// NOVO: Para adicionar/remover sites, mexa apenas aqui!
 const SITES_CONFIG = [
-    { name: 'LinkedIn', site: 'linkedin.com/jobs' },
-    { name: 'Gupy', site: 'gupy.io' },
-    { name: 'Glassdoor', site: 'glassdoor.com.br' },
-    { name: 'VAGAS', site: 'vagas.com.br' },
-    { name: 'Indeed', site: 'https://br.indeed.com' },
-    { name: 'Infojobs', site: 'https://www.infojobs.com.br' },
-    { name: 'RioVagas', site: 'https://riovagas.com.br' },
-    { name: 'Catho', site: 'https://www.catho.com.br' }
+    { name: 'Indeed', id: 'Indeed' },
+    { name: 'LinkedIn', id: 'LinkedIn' },
+    { name: 'InfoJobs', id: 'InfoJobs' },
+    { name: 'Catho', id: 'Catho' },
+    { name: 'RioVagas', id: 'RioVagas' }
 ];
-// -------------------------
 
 const API_PYTHON_URL = 'http://127.0.0.1:5000/buscar_vagas';
 const PALAVRA_CHAVE = '!vagas';
 const userState = {};
 
+// NOVO: Função refatorada para executar a busca e enviar a resposta
+async function executarBusca(sock, userJid, currentUserState) {
+    await sock.sendMessage(userJid, { text: 'Aguarde um momento, estou consultando as fontes de vagas... 👨‍💻' });
+    
+    try {
+        const response = await axios.post(API_PYTHON_URL, {
+            cargo: currentUserState.cargo,
+            localizacao: currentUserState.localizacao,
+            sites: currentUserState.sites
+        });
+
+        const vagas = response.data;
+        if (vagas && vagas.length > 0) {
+            let respostaFinal = `Encontrei ${vagas.length} vaga(s) para *${currentUserState.cargo}*:\n\n`;
+            vagas.forEach((vaga) => {
+                respostaFinal += `${vaga}\n\n---\n\n`; 
+            });
+            // Remove as últimas 5 quebras de linha e traços para um final limpo
+            respostaFinal = respostaFinal.slice(0, -5);
+            await sock.sendMessage(userJid, { text: respostaFinal });
+        } else {
+            await sock.sendMessage(userJid, { text: 'Desculpe, não encontrei nenhuma vaga com esses critérios nos sites selecionados.' });
+        }
+    } catch (error) {
+        console.error("Erro ao chamar a API Python:", error.response ? error.response.data : error.message);
+        await sock.sendMessage(userJid, { text: 'Ocorreu um erro interno ao buscar as vagas. Tente novamente mais tarde.' });
+    } finally {
+        // Limpa o estado do usuário após a busca
+        delete userState[userJid];
+    }
+}
+
+
 async function connectToWhatsApp() {
     const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
-    const sock = makeWASocket({
-        logger: pino({ level: 'warn' }),
-        auth: state,
-    });
+    const sock = makeWASocket({ logger: pino({ level: 'warn' }), auth: state });
 
     sock.ev.on('connection.update', (update) => {
         const { connection, lastDisconnect, qr } = update;
@@ -38,12 +62,9 @@ async function connectToWhatsApp() {
         }
         if (connection === 'close') {
             const shouldReconnect = (lastDisconnect.error instanceof Boom)?.output?.statusCode !== DisconnectReason.loggedOut;
-            console.log('Conexão fechada, motivo: ', lastDisconnect.error, '. Reconectando: ', shouldReconnect);
-            if (shouldReconnect) {
-                connectToWhatsApp();
-            }
+            if (shouldReconnect) connectToWhatsApp();
         } else if (connection === 'open') {
-            console.log('Conexão aberta e bot online!');
+            console.log('Conexão aberta e bot online! JID:', sock.user.id);
         }
     });
 
@@ -57,89 +78,93 @@ async function connectToWhatsApp() {
         const messageText = (msg.message.conversation || msg.message.extendedTextMessage?.text || '').trim();
         const currentUserState = userState[userJid];
 
-        if (!currentUserState && messageText.toLowerCase() === PALAVRA_CHAVE) {
-            userState[userJid] = { step: 'escolher_sites' };
+        const isGroup = userJid.endsWith('@g.us');
+        const commandReceived = messageText.toLowerCase().includes(PALAVRA_CHAVE);
+        const mentionedJid = msg.message.extendedTextMessage?.contextInfo?.mentionedJid || [];
+        const botId = sock.user.id.split(':')[0] + '@s.whatsapp.net';
+        const isBotMentioned = mentionedJid.includes(botId);
+        
+        let shouldStartFlow = false;
+        if (isGroup) {
+            if (commandReceived && isBotMentioned) shouldStartFlow = true;
+        } else {
+            if (commandReceived) shouldStartFlow = true;
+        }
 
-            // ALTERADO: O menu é gerado dinamicamente a partir da SITES_CONFIG
-            let menuText = `Olá! 👋 Bem-vindo ao buscador de vagas.\nEscolha uma das opções abaixo digitando o número correspondente:\n\n`;
-            
+        if (!currentUserState && shouldStartFlow) {
+            userState[userJid] = { step: 'escolher_sites' };
+            let menuText = `Olá! 👋 Fui chamado para buscar vagas.\nEscolha um ou mais sites (separados por vírgula) ou 'todos':\n\n`;
             SITES_CONFIG.forEach((item, index) => {
                 menuText += `*${index + 1}.* ${item.name}\n`;
             });
-
-            const todosOptionNumber = SITES_CONFIG.length + 1;
-            menuText += `*${todosOptionNumber}.* TODOS os sites acima`;
-
+            menuText += `*${SITES_CONFIG.length + 1}.* TODOS os sites acima`;
             await sock.sendMessage(userJid, { text: menuText });
             return;
         }
         
         if (currentUserState) {
+            if (messageText.toLowerCase() === '!cancelar') {
+                delete userState[userJid];
+                await sock.sendMessage(userJid, { text: 'Sua busca foi cancelada.' });
+                return;
+            }
+
             switch (currentUserState.step) {
                 case 'escolher_sites':
-                    const choiceNumber = parseInt(messageText);
-                    const totalOptions = SITES_CONFIG.length + 1;
-                    let choiceName = '';
+                    const choices = messageText.toLowerCase().split(',').map(c => c.trim());
                     let sitesToSearch = [];
 
-                    // ALTERADO: A lógica de escolha é dinâmica
-                    if (!isNaN(choiceNumber) && choiceNumber > 0 && choiceNumber <= totalOptions) {
-                        // Verifica se a opção "TODOS" foi escolhida
-                        if (choiceNumber === totalOptions) {
-                            choiceName = 'TODOS os sites';
-                            // Pega todos os sites da configuração
-                            sitesToSearch = SITES_CONFIG.map(item => item.site);
-                        } else {
-                            // Pega uma opção individual
-                            const selectedConfig = SITES_CONFIG[choiceNumber - 1];
-                            choiceName = selectedConfig.name;
-                            sitesToSearch = [selectedConfig.site];
-                        }
-                        
-                        currentUserState.sites = sitesToSearch;
-                        currentUserState.step = 'pedir_cargo';
-                        await sock.sendMessage(userJid, { text: `Ótimo! Você escolheu *${choiceName}*. \nAgora, digite o *cargo* que você deseja buscar.` });
-
+                    if (choices.includes('todos') || choices.includes((SITES_CONFIG.length + 1).toString())) {
+                        sitesToSearch = SITES_CONFIG.map(s => s.id);
                     } else {
-                        // A mensagem de erro também é dinâmica
-                        await sock.sendMessage(userJid, { text: `Opção inválida. Por favor, digite um número de *1* a *${totalOptions}*.` });
+                        choices.forEach(choice => {
+                            const choiceIndex = parseInt(choice) - 1;
+                            if (!isNaN(choiceIndex) && choiceIndex >= 0 && choiceIndex < SITES_CONFIG.length) {
+                                sitesToSearch.push(SITES_CONFIG[choiceIndex].id);
+                            }
+                        });
+                    }
+
+                    if (sitesToSearch.length > 0) {
+                        currentUserState.sites = [...new Set(sitesToSearch)];
+                        
+                        // --- LÓGICA CONDICIONAL INTELIGENTE ---
+                        const isOnlyRioVagas = currentUserState.sites.length === 1 && currentUserState.sites[0] === 'RioVagas';
+
+                        if (isOnlyRioVagas) {
+                            // Se for SÓ RioVagas, pula a pergunta de local
+                            currentUserState.step = 'pedir_cargo_para_riovagas'; // Um passo especial
+                            await sock.sendMessage(userJid, { text: `Ótimo! Buscarei no RioVagas. Qual o *cargo* que você deseja?` });
+                        } else {
+                            // Para qualquer outra combinação, segue o fluxo normal
+                            currentUserState.step = 'pedir_cargo';
+                            await sock.sendMessage(userJid, { text: `Ótimo! Buscarei em: *${currentUserState.sites.join(', ')}*. \nAgora, digite o *cargo* que você deseja.` });
+                        }
+                    } else {
+                        await sock.sendMessage(userJid, { text: `Opção inválida. Por favor, digite os números dos sites (ex: 1, 3) ou 'todos'.` });
                     }
                     break;
-
+                
+                // Fluxo normal que pede localização
                 case 'pedir_cargo':
                     currentUserState.cargo = messageText;
                     currentUserState.step = 'pedir_local';
-                    await sock.sendMessage(userJid, { text: 'Perfeito. E qual a *localização*? (Ex: São Paulo, Remoto)' });
+                    await sock.sendMessage(userJid, { text: 'Perfeito. E qual a *localização*? (Ex: São Paulo, Brasil)' });
+                    break;
+                
+                // NOVO: Fluxo especial para RioVagas que não pede localização
+                case 'pedir_cargo_para_riovagas':
+                    currentUserState.cargo = messageText;
+                    // Define uma localização padrão, pois o backend espera o campo, mesmo que o ignore
+                    currentUserState.localizacao = "Rio de Janeiro";
+                    // Pula direto para a execução da busca
+                    await executarBusca(sock, userJid, currentUserState);
                     break;
 
                 case 'pedir_local':
                     currentUserState.localizacao = messageText;
-                    await sock.sendMessage(userJid, { text: 'Aguarde um momento, estou buscando as melhores vagas para você... 👨‍💻' });
-                    
-                    try {
-                        const response = await axios.post(API_PYTHON_URL, {
-                            cargo: currentUserState.cargo,
-                            localizacao: currentUserState.localizacao,
-                            sites: currentUserState.sites,
-                            quantidade: 20
-                        });
-
-                        const vagas = response.data;
-                        if (vagas && vagas.length > 0) {
-                            let respostaFinal = `Encontrei ${vagas.length} vaga(s) para *${currentUserState.cargo}*:\n\n`;
-                            vagas.forEach((vaga, index) => {
-                                respostaFinal += `${index + 1}. ${vaga}\n\n`;
-                            });
-                            await sock.sendMessage(userJid, { text: respostaFinal });
-                        } else {
-                            await sock.sendMessage(userJid, { text: 'Desculpe, não encontrei nenhuma vaga com esses critérios.' });
-                        }
-                    } catch (error) {
-                        console.error("Erro ao chamar a API Python:", error);
-                        await sock.sendMessage(userJid, { text: 'Ocorreu um erro interno ao buscar as vagas. Tente novamente mais tarde.' });
-                    }
-                    
-                    delete userState[userJid];
+                    // Chama a função de busca
+                    await executarBusca(sock, userJid, currentUserState);
                     break;
             }
         }
