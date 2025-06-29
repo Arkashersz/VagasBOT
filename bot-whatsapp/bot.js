@@ -1,4 +1,4 @@
-// bot.js (versão com fluxo inteligente para RioVagas)
+// bot.js (versão com fluxo inteligente e Gupy)
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
 const { Boom } = require('@hapi/boom');
 const pino = require('pino');
@@ -10,17 +10,18 @@ const SITES_CONFIG = [
     { name: 'LinkedIn', id: 'LinkedIn' },
     { name: 'InfoJobs', id: 'InfoJobs' },
     { name: 'Catho', id: 'Catho' },
-    { name: 'RioVagas', id: 'RioVagas' }
+    { name: 'RioVagas', id: 'RioVagas' },
+    { name: 'Gupy', id: 'Gupy' } // NOVO: Gupy adicionado à lista
 ];
 
 const API_PYTHON_URL = 'http://127.0.0.1:5000/buscar_vagas';
 const PALAVRA_CHAVE = '!vagas';
 const userState = {};
 
-// NOVO: Função refatorada para executar a busca e enviar a resposta
+// Função refatorada para executar a busca e enviar a resposta
 async function executarBusca(sock, userJid, currentUserState) {
     await sock.sendMessage(userJid, { text: 'Aguarde um momento, estou consultando as fontes de vagas... 👨‍💻' });
-    
+
     try {
         const response = await axios.post(API_PYTHON_URL, {
             cargo: currentUserState.cargo,
@@ -32,7 +33,7 @@ async function executarBusca(sock, userJid, currentUserState) {
         if (vagas && vagas.length > 0) {
             let respostaFinal = `Encontrei ${vagas.length} vaga(s) para *${currentUserState.cargo}*:\n\n`;
             vagas.forEach((vaga) => {
-                respostaFinal += `${vaga}\n\n---\n\n`; 
+                respostaFinal += `${vaga}\n\n---\n\n`;
             });
             // Remove as últimas 5 quebras de linha e traços para um final limpo
             respostaFinal = respostaFinal.slice(0, -5);
@@ -83,7 +84,7 @@ async function connectToWhatsApp() {
         const mentionedJid = msg.message.extendedTextMessage?.contextInfo?.mentionedJid || [];
         const botId = sock.user.id.split(':')[0] + '@s.whatsapp.net';
         const isBotMentioned = mentionedJid.includes(botId);
-        
+
         let shouldStartFlow = false;
         if (isGroup) {
             if (commandReceived && isBotMentioned) shouldStartFlow = true;
@@ -101,7 +102,7 @@ async function connectToWhatsApp() {
             await sock.sendMessage(userJid, { text: menuText });
             return;
         }
-        
+
         if (currentUserState) {
             if (messageText.toLowerCase() === '!cancelar') {
                 delete userState[userJid];
@@ -127,7 +128,7 @@ async function connectToWhatsApp() {
 
                     if (sitesToSearch.length > 0) {
                         currentUserState.sites = [...new Set(sitesToSearch)];
-                        
+
                         // --- LÓGICA CONDICIONAL INTELIGENTE ---
                         const isOnlyRioVagas = currentUserState.sites.length === 1 && currentUserState.sites[0] === 'RioVagas';
 
@@ -144,14 +145,14 @@ async function connectToWhatsApp() {
                         await sock.sendMessage(userJid, { text: `Opção inválida. Por favor, digite os números dos sites (ex: 1, 3) ou 'todos'.` });
                     }
                     break;
-                
+
                 // Fluxo normal que pede localização
                 case 'pedir_cargo':
                     currentUserState.cargo = messageText;
                     currentUserState.step = 'pedir_local';
-                    await sock.sendMessage(userJid, { text: 'Perfeito. E qual a *localização*? (Ex: São Paulo, Brasil)' });
+                    await sock.sendMessage(userJid, { text: 'Perfeito. E qual a *localização*? (Ex: São Paulo, Home Office)' });
                     break;
-                
+
                 // NOVO: Fluxo especial para RioVagas que não pede localização
                 case 'pedir_cargo_para_riovagas':
                     currentUserState.cargo = messageText;

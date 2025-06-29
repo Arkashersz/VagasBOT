@@ -1,4 +1,4 @@
-# app.py (Versão com o scraper funcional do RioVagas RESTAURADO)
+# app.py (Versão com scraper da Gupy adicionado)
 
 import requests
 from bs4 import BeautifulSoup
@@ -7,7 +7,7 @@ from urllib.parse import quote
 import time
 import unicodedata
 
-# Imports do SeleniumBase, usados pela Catho e RioVagas
+# Imports do SeleniumBase, usados pela Catho, RioVagas e Gupy
 from seleniumbase import SB
 from selenium.common.exceptions import TimeoutException
 
@@ -33,7 +33,7 @@ def get_sigla_estado(local_str):
             return sigla
     for sigla in ESTADOS_BRASIL.values():
         if f" {sigla} " in f" {local_normalizado} " or local_normalizado == sigla:
-             return sigla
+            return sigla
     return None
 
 def iniciar_driver_sb():
@@ -117,8 +117,6 @@ def scrape_catho(cargo, localizacao):
         with SB(uc=True, headless=True, agent=HEADERS["User-Agent"]) as sb:
             print(f"DEBUG: Acessando URL: {url}")
             sb.open(url)
-
-            # Espera pela lista de resultados (o <ul>) carregar
             seletor_lista = "ul.search-result-custom_jobList__lVIvI"
             print(f"DEBUG: Esperando pela lista de vagas: '{seletor_lista}'")
             sb.wait_for_element(seletor_lista, timeout=15)
@@ -127,17 +125,14 @@ def scrape_catho(cargo, localizacao):
             html_final = sb.get_page_source()
             sopa = BeautifulSoup(html_final, 'lxml')
             
-            # Usa o seletor do card principal que você encontrou
             cartoes_vaga = sopa.select("li.search-result-custom_jobItem__OGz3a")
             print(f"DEBUG: Encontrados {len(cartoes_vaga)} cards de vaga na página.")
 
             for vaga in cartoes_vaga[:15]:
-                # Usa os seletores precisos que você identificou
                 titulo_tag = vaga.select_one('h2.Title-module__title___3S2cv a')
                 empresa_tag = vaga.select_one('p.sc-ejfMa-d.fJfzcm')
-                salario_tag = vaga.select_one('div.custom-styled_salaryText__oSvPo') # Corrigido para div
+                salario_tag = vaga.select_one('div.custom-styled_salaryText__oSvPo')
                 
-                # Tratamento robusto para evitar erros se um elemento não for encontrado
                 titulo = titulo_tag.text.strip() if titulo_tag else 'N/A'
                 link = titulo_tag['href'] if titulo_tag and titulo_tag.has_attr('href') else 'N/A'
                 empresa = empresa_tag.text.strip() if empresa_tag else 'Confidencial'
@@ -154,7 +149,6 @@ def scrape_catho(cargo, localizacao):
     print(f"--- [INFO] Finalizada busca na Catho. {len(resultados)} vagas processadas. ---")
     return list(set(resultados))
 
-# --- FUNÇÃO DO RIOVAGAS RESTAURADA PARA A VERSÃO FUNCIONAL COM SELENIUMBASE ---
 def scrape_riovagas(cargo, localizacao):
     print(f"\n--- [INFO] Iniciando busca no RioVagas com SeleniumBase: '{cargo}' ---")
     resultados = []
@@ -191,6 +185,66 @@ def scrape_riovagas(cargo, localizacao):
     print(f"--- [INFO] Finalizada busca no RioVagas. {len(resultados)} vagas processadas. ---")
     return list(set(resultados))
 
+# --- NOVA FUNÇÃO DE SCRAPING PARA A GUPY ---
+def scrape_gupy(cargo, localizacao):
+    print(f"\n--- [INFO] Iniciando busca na Gupy com SeleniumBase: '{cargo}' em '{localizacao}' ---")
+    resultados = []
+    
+    # Monta a URL. A Gupy usa o nome do estado por extenso.
+    if localizacao and localizacao.lower() not in ['home office', 'remoto']:
+        url = f"https://portal.gupy.io/job-search/term={quote(cargo)}&state={quote(localizacao)}"
+    else:
+        url = f"https://portal.gupy.io/job-search/term={quote(cargo)}"
+
+    try:
+        with SB(uc=True, headless=True, agent=HEADERS["User-Agent"]) as sb:
+            print(f"DEBUG: Acessando URL da Gupy: {url}")
+            sb.open(url)
+            
+            # Espera a lista de vagas (<ul>) carregar. Essa é a div que contém a lista.
+            seletor_container = "ul.sc-414a0afd-0.biBubC"
+            print(f"DEBUG: Esperando pelo container de vagas: '{seletor_container}'")
+            sb.wait_for_element(seletor_container, timeout=20)
+            print("DEBUG: Página de resultados da Gupy carregada.")
+            
+            html_final = sb.get_page_source()
+            sopa = BeautifulSoup(html_final, 'lxml')
+            
+            # Seletor para cada item (<li>) da lista de vagas
+            cartoes_vaga = sopa.select("ul.sc-414a0afd-0.biBubC li")
+            print(f"DEBUG: Encontrados {len(cartoes_vaga)} cards de vaga na Gupy.")
+            
+            for vaga in cartoes_vaga[:15]:
+                # Usando os seletores que você identificou
+                link_tag = vaga.select_one('a.sc-4d881605-1.IKqnq')
+                titulo_tag = vaga.select_one('h3.sc-4d881605-4.dZRYPZ')
+                empresa_tag = vaga.select_one('p.sc-4d881605-5.bpsGtj')
+                local_tag = vaga.select_one('span[data-testid="job-location"]')
+                data_tag = vaga.select_one('p.sc-d9e69618-0.iUzUdL')
+
+                # Tratamento robusto para evitar erros
+                titulo = titulo_tag.text.strip() if titulo_tag else 'N/A'
+                link = link_tag['href'] if link_tag and link_tag.has_attr('href') else 'N/A'
+                empresa = empresa_tag.text.strip() if empresa_tag else 'Não informado'
+                local = local_tag.text.strip() if local_tag else 'Não informado'
+                data_publicacao = data_tag.text.strip() if data_tag else 'Não informada'
+                
+                # O texto da data vem como "Publicada em: DD/MM/YYYY"
+                # Podemos remover o prefixo se quisermos
+                if 'Publicada em:' in data_publicacao:
+                    data_publicacao = data_publicacao.replace('Publicada em:', '').strip()
+
+                resultado_formatado = f"*{titulo}*\n🏢 Empresa: {empresa}\n📍 Local: {local}\n📅 Publicada em: {data_publicacao}\n🔗 Link: {link}"
+                resultados.append(resultado_formatado)
+
+    except TimeoutException:
+        print(f"[AVISO] O tempo de espera para encontrar os resultados na Gupy esgotou. Pode não haver vagas para '{cargo}' em '{localizacao}'.")
+    except Exception as e:
+        print(f"[ERRO] Falha no scraper da Gupy com SeleniumBase: {e}")
+        
+    print(f"--- [INFO] Finalizada busca na Gupy. {len(resultados)} vagas processadas. ---")
+    return list(set(resultados))
+
 
 # --- API FLASK ---
 app = Flask(__name__)
@@ -200,28 +254,35 @@ def handle_busca():
     dados = request.json
     if not all(k in dados for k in ['cargo', 'localizacao', 'sites']):
         return jsonify({"erro": "Dados incompletos"}), 400
+    
     cargo = dados['cargo']
     localizacao = dados['localizacao']
     sites_selecionados = dados['sites']
     todos_resultados = []
+    
     print(f"\n\n=======================================================")
     print(f"INFO: NOVA REQUISIÇÃO: '{cargo}' em '{localizacao}'")
     print(f"INFO: Sites selecionados: {sites_selecionados}")
     print(f"=======================================================")
+    
     mapa_scrapers = {
         'Indeed': scrape_indeed,
         'LinkedIn': scrape_linkedin,
         'InfoJobs': scrape_infojobs,
         'Catho': scrape_catho,
         'RioVagas': scrape_riovagas,
+        'Gupy': scrape_gupy, # NOVO: Gupy adicionado ao mapa de scrapers
     }
+    
     for site_nome in sites_selecionados:
         if site_nome in mapa_scrapers:
+            # O scraper da Gupy precisa do nome do estado por extenso, então passamos a localização original
             resultados_site = mapa_scrapers[site_nome](cargo, localizacao)
             if resultados_site:
                 todos_resultados.extend(resultados_site)
         else:
             print(f"WARN: Nenhum scraper definido para o site: {site_nome}")
+            
     if todos_resultados:
         todos_resultados = list(set(todos_resultados))
         print(f"=======================================================")
