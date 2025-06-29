@@ -1,55 +1,51 @@
-# app.py (Versão final com SeleniumBase para o RioVagas)
+# app.py (Versão com o scraper funcional do RioVagas RESTAURADO)
 
 import requests
 from bs4 import BeautifulSoup
 from flask import Flask, request, jsonify
 from urllib.parse import quote
 import time
+import unicodedata
 
-# NOVO: Importa o Driver do SeleniumBase
-from seleniumbase import Driver
+# Imports do SeleniumBase, usados pela Catho e RioVagas
+from seleniumbase import SB
+from selenium.common.exceptions import TimeoutException
 
-# Headers para os scrapers que usam 'requests'
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
     "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7"
 }
 
-# --- FUNÇÃO DE INICIALIZAÇÃO PARA SELENIUMBASE ---
+ESTADOS_BRASIL = {
+    'acre': 'ac', 'alagoas': 'al', 'amapa': 'ap', 'amazonas': 'am', 'bahia': 'ba', 'ceara': 'ce',
+    'distrito federal': 'df', 'espirito santo': 'es', 'goias': 'go', 'maranhao': 'ma',
+    'mato grosso': 'mt', 'mato grosso do sul': 'ms', 'minas gerais': 'mg', 'para': 'pa',
+    'paraiba': 'pb', 'parana': 'pr', 'pernambuco': 'pe', 'piaui': 'pi', 'rio de janeiro': 'rj',
+    'rio grande do norte': 'rn', 'rio grande do sul': 'rs', 'rondonia': 'ro', 'roraima': 'rr',
+    'santa catarina': 'sc', 'sao paulo': 'sp', 'sergipe': 'se', 'tocantins': 'to',
+    'rj': 'rj', 'sp': 'sp', 'mg': 'mg' 
+}
+
+def get_sigla_estado(local_str):
+    local_normalizado = ''.join(c for c in unicodedata.normalize('NFD', local_str.lower()) if unicodedata.category(c) != 'Mn')
+    for nome, sigla in ESTADOS_BRASIL.items():
+        if nome in local_normalizado:
+            return sigla
+    for sigla in ESTADOS_BRASIL.values():
+        if f" {sigla} " in f" {local_normalizado} " or local_normalizado == sigla:
+             return sigla
+    return None
+
 def iniciar_driver_sb():
-    """Inicializa e retorna uma instância do Driver do SeleniumBase em modo indetectável."""
     print("INFO: Iniciando driver com SeleniumBase (modo UC)...")
-    # uc=True ativa o modo anti-detecção. headless=True roda sem interface gráfica.
-    driver = Driver(uc=True, headless=True, agent=HEADERS["User-Agent"])
+    driver = SB(uc=True, headless=True, agent=HEADERS["User-Agent"])
     return driver
 
 # --- FUNÇÕES DE SCRAPING ---
 
-# ... (as funções para Indeed, LinkedIn, InfoJobs e Catho permanecem as mesmas, usando requests) ...
 def scrape_indeed(cargo, localizacao):
-    print(f"\n--- [INFO] Iniciando busca no Indeed: '{cargo}' em '{localizacao}' ---")
-    resultados = []
-    try:
-        url = f"https://br.indeed.com/jobs?q={quote(cargo)}&l={quote(localizacao)}"
-        resposta = requests.get(url, headers=HEADERS, timeout=10)
-        resposta.raise_for_status()
-        sopa = BeautifulSoup(resposta.text, 'lxml')
-        cartoes_vaga = sopa.select('div.job_seen_beacon')
-        for vaga in cartoes_vaga:
-            titulo_tag = vaga.select_one('h2.jobTitle span, h2.jobTitle a span')
-            titulo = titulo_tag.get('title', 'N/A') if titulo_tag else "N/A"
-            link_tag = vaga.select_one('h2.jobTitle a')
-            link = "https://br.indeed.com" + link_tag['href'] if link_tag and link_tag.has_attr('href') else "N/A"
-            empresa_tag = vaga.select_one('span[data-testid="company-name"]')
-            empresa = empresa_tag.text.strip() if empresa_tag else "N/A"
-            local_tag = vaga.select_one('div[data-testid="text-location"]')
-            local = local_tag.text.strip() if local_tag else "N/A"
-            resultado_formatado = f"*{titulo}*\n🏢 Empresa: {empresa}\n📍 Local: {local}\n🔗 Link: {link}"
-            resultados.append(resultado_formatado)
-    except Exception as e:
-        print(f"[ERRO] Falha no scraper do Indeed: {e}")
-    print(f"--- [INFO] Finalizada busca no Indeed. {len(resultados)} vagas processadas. ---")
-    return list(set(resultados))
+    print(f"\n--- [AVISO] O scraper para o Indeed está desativado. ---")
+    return []
 
 def scrape_linkedin(cargo, localizacao):
     print(f"\n--- [INFO] Iniciando busca no LinkedIn: '{cargo}' em '{localizacao}' ---")
@@ -104,65 +100,93 @@ def scrape_infojobs(cargo, localizacao):
     return list(set(resultados))
 
 def scrape_catho(cargo, localizacao):
-    print(f"\n--- [INFO] Iniciando busca na Catho: '{cargo}' em '{localizacao}' ---")
-    # ... (lógica da Catho permanece a mesma) ...
+    print(f"\n--- [INFO] Iniciando busca na Catho com SeleniumBase: '{cargo}' em '{localizacao}' ---")
     resultados = []
+    
+    sigla_estado = get_sigla_estado(localizacao)
+    cargo_slug = cargo.lower().replace(' ', '-')
+
+    if not sigla_estado:
+        print(f"[AVISO] Não foi possível determinar a sigla do estado para '{localizacao}'. Buscando na Catho sem filtro de local.")
+        url = f"https://www.catho.com.br/vagas/{quote(cargo_slug)}/"
+    else:
+        print(f"DEBUG: Sigla do estado encontrada: '{sigla_estado}'")
+        url = f"https://www.catho.com.br/vagas/{quote(cargo_slug)}/{sigla_estado}/"
+
     try:
-        cargo_formatado = cargo.lower().replace(' ', '-')
-        url = f"https://www.catho.com.br/vagas/{cargo_formatado}/?pais_id=1"
-        resposta = requests.get(url, headers=HEADERS, timeout=15)
-        resposta.raise_for_status()
-        sopa = BeautifulSoup(resposta.text, 'lxml')
-        cartoes_vaga = sopa.find_all('article', class_='CardVaga')
-        for vaga in cartoes_vaga:
-            titulo_tag = vaga.select_one('h2.sc-iGPElx a')
-            titulo = titulo_tag.text.strip() if titulo_tag else 'N/A'
-            empresa_tag = vaga.select_one('p.sc-gsnTZi')
-            empresa = empresa_tag.text.strip() if empresa_tag else 'Confidencial'
-            link = titulo_tag['href'] if titulo_tag and titulo_tag.has_attr('href') else 'N/A'
-            resultado_formatado = f"*{titulo}*\n🏢 Empresa: {empresa}\n🔗 Link: {link}"
-            resultados.append(resultado_formatado)
+        with SB(uc=True, headless=True, agent=HEADERS["User-Agent"]) as sb:
+            print(f"DEBUG: Acessando URL: {url}")
+            sb.open(url)
+
+            # Espera pela lista de resultados (o <ul>) carregar
+            seletor_lista = "ul.search-result-custom_jobList__lVIvI"
+            print(f"DEBUG: Esperando pela lista de vagas: '{seletor_lista}'")
+            sb.wait_for_element(seletor_lista, timeout=15)
+            print("DEBUG: Página de resultados da Catho carregada.")
+
+            html_final = sb.get_page_source()
+            sopa = BeautifulSoup(html_final, 'lxml')
+            
+            # Usa o seletor do card principal que você encontrou
+            cartoes_vaga = sopa.select("li.search-result-custom_jobItem__OGz3a")
+            print(f"DEBUG: Encontrados {len(cartoes_vaga)} cards de vaga na página.")
+
+            for vaga in cartoes_vaga[:15]:
+                # Usa os seletores precisos que você identificou
+                titulo_tag = vaga.select_one('h2.Title-module__title___3S2cv a')
+                empresa_tag = vaga.select_one('p.sc-ejfMa-d.fJfzcm')
+                salario_tag = vaga.select_one('div.custom-styled_salaryText__oSvPo') # Corrigido para div
+                
+                # Tratamento robusto para evitar erros se um elemento não for encontrado
+                titulo = titulo_tag.text.strip() if titulo_tag else 'N/A'
+                link = titulo_tag['href'] if titulo_tag and titulo_tag.has_attr('href') else 'N/A'
+                empresa = empresa_tag.text.strip() if empresa_tag else 'Confidencial'
+                salario = salario_tag.text.strip() if salario_tag else 'Não informado'
+                
+                resultado_formatado = f"*{titulo}*\n🏢 Empresa: {empresa}\n💰 Salário: {salario}\n🔗 Link: {link}"
+                resultados.append(resultado_formatado)
+
+    except TimeoutException:
+        print(f"[ERRO] O tempo de espera para encontrar os resultados na Catho esgotou. A busca pode não ter retornado vagas para os critérios.")
     except Exception as e:
-        print(f"[ERRO] Falha no scraper da Catho: {e}")
+        print(f"[ERRO] Falha no scraper da Catho com SeleniumBase: {e}")
+
     print(f"--- [INFO] Finalizada busca na Catho. {len(resultados)} vagas processadas. ---")
     return list(set(resultados))
 
-# --- SCRAPER REESCRITO COM SELENIUMBASE PARA MÁXIMA ROBUSTEZ ---
+# --- FUNÇÃO DO RIOVAGAS RESTAURADA PARA A VERSÃO FUNCIONAL COM SELENIUMBASE ---
 def scrape_riovagas(cargo, localizacao):
     print(f"\n--- [INFO] Iniciando busca no RioVagas com SeleniumBase: '{cargo}' ---")
-    driver = None
     resultados = []
     try:
-        # Etapa 1: Iniciar o driver "invisível"
-        driver = iniciar_driver_sb()
-        
-        # Etapa 2: Navegar para a URL
-        cargo_slug = cargo.lower().replace(' ', '-')
-        url = f"https://riovagas.com.br/tag/{quote(cargo_slug)}/"
-        driver.open(url) # Comando do SeleniumBase para abrir a URL
+        with SB(uc=True, headless=True, agent=HEADERS["User-Agent"]) as sb:
+            cargo_slug = cargo.lower().replace(' ', '-')
+            url = f"https://riovagas.com.br/tag/{quote(cargo_slug)}/"
+            print(f"DEBUG: Acessando URL: {url}")
+            sb.open(url)
 
-        # Etapa 3: Extrair os dados usando a combinação SeleniumBase + BeautifulSoup
-        seletor_direto = 'div.vce-main-content h2.entry-title a'
-        
-        print(f"DEBUG: Procurando pelos links de vaga com o seletor: '{seletor_direto}'")
-        # get_elements é um método do SeleniumBase que já espera os elementos aparecerem
-        tags_de_link = driver.find_elements(seletor_direto)
-        print(f"DEBUG: Encontrados {len(tags_de_link)} links de vaga.")
+            seletor_direto = 'div.vce-main-content h2.entry-title a'
+            print(f"DEBUG: Procurando pelos links de vaga com o seletor: '{seletor_direto}'")
+            
+            tags_de_link = sb.find_elements(seletor_direto)
+            print(f"DEBUG: Encontrados {len(tags_de_link)} links de vaga.")
 
-        for link_tag in tags_de_link[:15]:
-            titulo = link_tag.text.strip()
-            link = link_tag.get_attribute('href')
-            
-            resultado_formatado = f"*{titulo}*\n🔗 Link: {link}"
-            resultados.append(resultado_formatado)
-            
+            for link_tag in tags_de_link[:15]:
+                titulo = link_tag.text.strip()
+                link = link_tag.get_attribute('href')
+                
+                try:
+                    card_pai = link_tag.find_element("xpath", "./ancestor::article")
+                    data_tag = card_pai.find_element("css selector", 'span.meta-item.date time')
+                    data_publicacao = data_tag.text.strip()
+                except Exception:
+                    data_publicacao = "N/A"
+                
+                resultado_formatado = f"*{titulo}*\n📅 Publicado em: {data_publicacao}\n🔗 Link: {link}"
+                resultados.append(resultado_formatado)
+                
     except Exception as e:
         print(f"[ERRO] Falha no scraper do RioVagas com SeleniumBase: {e}")
-    finally:
-        # Garante que o navegador sempre feche, mesmo em caso de erro
-        if driver:
-            print("INFO: Finalizando driver do SeleniumBase.")
-            driver.quit()
         
     print(f"--- [INFO] Finalizada busca no RioVagas. {len(resultados)} vagas processadas. ---")
     return list(set(resultados))
@@ -173,7 +197,6 @@ app = Flask(__name__)
 
 @app.route('/buscar_vagas', methods=['POST'])
 def handle_busca():
-    # ... (A lógica da API não muda) ...
     dados = request.json
     if not all(k in dados for k in ['cargo', 'localizacao', 'sites']):
         return jsonify({"erro": "Dados incompletos"}), 400
