@@ -1,4 +1,4 @@
-// bot.js (versão com Gupy e Vagas)
+// bot.js (Versão Completa Final)
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
 const { Boom } = require('@hapi/boom');
 const pino = require('pino');
@@ -12,14 +12,15 @@ const SITES_CONFIG = [
     { name: 'Catho', id: 'Catho' },
     { name: 'RioVagas', id: 'RioVagas' },
     { name: 'Gupy', id: 'Gupy' },
-    { name: 'Vagas.com.br', id: 'Vagas' } // NOVO: Vagas.com.br adicionado
+    { name: 'Vagas.com.br', id: 'Vagas' },
+    { name: 'Glassdoor', id: 'Glassdoor' }
 ];
 
 const API_PYTHON_URL = 'http://127.0.0.1:5000/buscar_vagas';
 const PALAVRA_CHAVE = '!vagas';
 const userState = {};
 
-// Função refatorada para executar a busca e enviar a resposta
+// Função para executar a busca e enviar a resposta
 async function executarBusca(sock, userJid, currentUserState) {
     await sock.sendMessage(userJid, { text: 'Aguarde um momento, estou consultando as fontes de vagas... 👨‍💻' });
     
@@ -36,6 +37,7 @@ async function executarBusca(sock, userJid, currentUserState) {
             vagas.forEach((vaga) => {
                 respostaFinal += `${vaga}\n\n---\n\n`; 
             });
+            // Remove as últimas 5 quebras de linha e traços para um final limpo
             respostaFinal = respostaFinal.slice(0, -5);
             await sock.sendMessage(userJid, { text: respostaFinal });
         } else {
@@ -45,11 +47,12 @@ async function executarBusca(sock, userJid, currentUserState) {
         console.error("Erro ao chamar a API Python:", error.response ? error.response.data : error.message);
         await sock.sendMessage(userJid, { text: 'Ocorreu um erro interno ao buscar as vagas. Tente novamente mais tarde.' });
     } finally {
+        // Limpa o estado do usuário após a busca
         delete userState[userJid];
     }
 }
 
-
+// Função principal de conexão com o WhatsApp
 async function connectToWhatsApp() {
     const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
     const sock = makeWASocket({ logger: pino({ level: 'warn' }), auth: state });
@@ -62,7 +65,12 @@ async function connectToWhatsApp() {
         }
         if (connection === 'close') {
             const shouldReconnect = (lastDisconnect.error instanceof Boom)?.output?.statusCode !== DisconnectReason.loggedOut;
-            if (shouldReconnect) connectToWhatsApp();
+            if (shouldReconnect) {
+                console.log('Conexão fechada por motivo inesperado, reconectando...');
+                connectToWhatsApp();
+            } else {
+                console.log('Conexão fechada, você foi desconectado.');
+            }
         } else if (connection === 'open') {
             console.log('Conexão aberta e bot online! JID:', sock.user.id);
         }
